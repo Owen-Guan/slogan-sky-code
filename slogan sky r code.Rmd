@@ -1,0 +1,228 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#to reload some needed packages
+```{r packages, message=FALSE, warning=FALSE}
+library(car)
+library(plotly)
+library(ggplot2)
+library(cowplot)
+library(ggthemes)
+library(xgboost)
+library(e1071)
+library(tree)
+library(MASS)
+library(DMwR)
+```
+#set a workpath to red the data
+```{r setwd & data_read}
+setwd('D:/studyFile')
+sky<-read.csv('SkyData.csv')
+```
+---
+
+##The first step is to conduct a preliminary analysis of the data to select appropriate variables to enter the model building process
+---
+View missing values
+```{r}
+sum(is.na(sky))
+```
+The conclusion shows that there is nothing missing from 10,000 data
+---
+Next check the categories
+```{r}
+p1 <- ggplotly(ggplot(sky, aes(class, fill = class)) + geom_bar() + theme_few())
+p1
+```
+The figure shows that the number of galaxies in the data is the largest, with nearly 5000 samples; the number of stars is the second with more than 4000 samples, and the number of quasars is the smallest, with less than 1000. Because the data is unbalanced, we use smooth to balance the data'''
+```{r}
+sky1=subset(sky,class!='STAR')
+sky2=subset(sky,class=='STAR')
+sky1$class <- factor(ifelse(sky1$class == "QSO","QSO","GALAXY"))
+```
+
+#Newly generate five times the number of small samples, and extract 5 times the small sample GALAXY'''
+```{r}
+ky3 <- SMOTE(class ~ redshift+g+r+i+z, sky1, perc.over = 500,perc.under=100)
+sky4<-rbind(sky2,sky3)
+table(sky4$class)
+write.csv(sky4,'D:\\dev\\skySMOTE.csv')
+```
+---
+Draw a scatter plot of ra and dec below
+```{r ra & dec}
+theme1<- theme_bw()+theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+                          legend.position="top")
+prd=ggplot(sky, aes(x=ra, y=dec))+stat_bin2d()
+prd+facet_grid(. ~ class)+theme_bw()
+```
+
+The color of the scattered points in the figure from light to dark represents the number of overlapping samples at this point from more to less. Combining the number of samples in each category and the distribution of the three categories in the figure, you will find that the location distributions of the three categories are relatively similar
+
+---
+Next, draw a nuclear density curve for the responses u, g, r, i, and z of the five bands
+```{r u, warning=FALSE}
+theme2<- theme_bw()+theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+                          legend.position="none")
+plot_grid(ggplot(sky, aes(u, fill = class)) + geom_density(alpha = 0.5)+theme1, 
+          ggplot(sky, aes(g, fill = class)) + geom_density(alpha = 0.5)+theme1,
+          ggplot(sky, aes(r, fill = class)) + geom_density(alpha = 0.5)+theme1,
+          ggplot(sky, aes(i, fill = class)) + geom_density(alpha = 0.5)+theme2,
+          ggplot(sky, aes(z, fill = class)) + geom_density(alpha = 0.5)+theme2,
+          align = "h")
+
+```
+It is found that for the g, r, I, and z responses, QSO is significantly different from the other two types, and the difference between GALAXY and STAR is not obvious in these responses.
+---
+Continue to draw scatter plots of rerun, camcol, and field
+```{r rerun camcol field}
+plot_grid(ggplot(sky, aes(x=class, y=run)) + geom_point()+theme1,
+ggplot(sky, aes(x=class, y=rerun)) + geom_point()+theme1,
+ggplot(sky, aes(x=class, y=camcol)) + geom_point()+theme2,
+ggplot(sky, aes(x=class, y=field)) + geom_point()+theme2)
+```
+It can be seen from the scatter plot that there is no significant difference
+---
+Draw redshift and scatter points of each category
+```{r}
+ggplot(sky, aes(x=class, y=redshift)) + geom_point()
+```
+---
+Further select suitable variables among other variables for further scatter plot drawing
+```{r redshift}
+plot_grid(ggplot(sky, aes(x=ra, y=redshift, colour=class)) + geom_point()+theme1,
+ggplot(sky, aes(x=dec, y=redshift, colour=class)) + geom_point()+theme1)
+ggplot(sky, aes(x=class, y=redshift))+ geom_boxplot(aes(group=class))
+```
+
+It can be seen from the figure that the redshifts of STAR in the three types of stars are concentrated at a very small level, the concentration level of GALAXY is higher than that of STAR, and the redshift of QSO is basically at a high level. The three types are very evenly distributed in ra and dec
+---
+
+Continue to draw the nuclear density curve for the remaining variables that may have an impact
+```{r mjd & fiberid}
+plot_grid(ggplot(sky, aes(mjd, fill = class)) + geom_density(alpha = 0.5)+theme1, 
+          ggplot(sky, aes(fiberid, fill = class)) + geom_density(alpha = 0.5)+theme1,
+          align = "h")
+```
+It can be seen that the distribution of mjd of STAR is somewhat different from the other two types, and the classification effect of fiberid is not clear.
+---
+
+### According to the above analysis, we decided to select g, r, i, z, and redshift to enter the modeling step
+```{r}
+set.seed(5)
+sky_use = sky[c('g','r','i','z','redshift','class')]
+train = sample(nrow(sky_use),0.7*nrow(sky_use))
+sky_use_train = sky_use[train,]
+sky_use_test = sky_use[-train,]
+dim(sky_use_train)
+dim(sky_use_test)
+```
+The balanced data is divided into training set and test set
+```{r}
+set.seed(5)
+sky_balance_use = sky4[c('g','r','i','z','redshift','class')]
+train = sample(nrow(sky_use),0.7*nrow(sky_use))
+sky_balance_train = sky_balance_use[train,]
+sky_balance_test = sky_balance_use[-train,]
+dim(sky_balance_train)
+dim(sky_balance_test)
+```
+---
+## Next is the common modeling process
+##LDA
+```{r}
+model_lda=lda(class ~ g+r+i+z+redshift,data = sky_use_train)
+plot(model_lda)
+
+```
+
+```{r}
+pred_lda_train <- predict(model_lda, sky_use_train)
+pred_lda_test <- predict(model_lda, sky_use_test)
+```
+
+```{r}
+table(pred_lda_train$class, sky_use_train$class)
+table(pred_lda_test$class, sky_use_test$class)
+```
+Next is Balanced samples
+```{r}
+model_balance_lda=lda(class ~ g+r+i+z+redshift,data = sky_balance_train)
+plot(model_balance_lda)
+
+```
+
+```{r}
+pred_balance_lda_train <- predict(model_balance_lda, sky_balance_train)
+pred_balance_lda_test <- predict(model_balance_lda, sky_balance_test)
+```
+
+```{r}
+table(pred_balance_lda_train$class, sky_balance_train$class)
+table(pred_balance_lda_test$class, sky_balance_test$class)
+```
+
+
+
+---
+###XGBOOST
+```{r}
+data_train_matrix = xgb.DMatrix(data = data.matrix(sky_use_train[c('g','r','i','z','redshift')]),label = sky_use_train$class)
+data_test_matrix = xgb.DMatrix(data = data.matrix(sky_use_test[c('g','r','i','z','redshift')]),label = sky_use_test$class)
+```
+
+```{r}
+model_xgb = xgb.train(data = data_train_matrix,nrounds = 4)
+```
+
+```{r}
+pre_train = predict(model_xgb,data.matrix(sky_use_train[c('g','r','i','z','redshift')]))
+pre_train_ = ifelse(pre_train>1,pre_train,0)
+pre_train__ = ifelse(pre_train_>2,2,pre_train_)
+pre_train___ = ifelse(pre_train__>1&pre_train__<2,1,pre_train__)
+table(pre_train___,sky_use_train$class)
+```
+
+```{r}
+pre_test = predict(model_xgb,data.matrix(sky_use_test[c('g','r','i','z','redshift')]))
+pre_test_ = ifelse(pre_test>1,pre_test,0)
+pre_test__ = ifelse(pre_test_>2,2,pre_test_)
+pre_test___ = ifelse(pre_test__>1&pre_test__<2,1,pre_test__)
+table(pre_test___,sky_use_test$class)
+```
+next is balanced sample for LDA model
+```{r}
+data_balance_train_matrix = xgb.DMatrix(data = data.matrix(sky_balance_train[c('g','r','i','z','redshift')]),label = sky_balance_train$class)
+data__balance_test_matrix = xgb.DMatrix(data = data.matrix(sky_balance_test[c('g','r','i','z','redshift')]),label = sky_balance_test$class)
+```
+
+```{r}
+model_xgb = xgb.train(data = data_balance_train_matrix,nrounds = 4)
+```
+
+```{r}
+pre_train = predict(model_xgb,data.matrix(sky_balance_train[c('g','r','i','z','redshift')]))
+pre_train_ = ifelse(pre_train>1,pre_train,0)
+pre_train__ = ifelse(pre_train_>2,2,pre_train_)
+pre_train___ = ifelse(pre_train__>1&pre_train__<2,1,pre_train__)
+table(pre_train___,sky_balance_train$class)
+```
+
+
+```{r}
+pre_test = predict(model_xgb,data.matrix(sky_balance_test[c('g','r','i','z','redshift')]))
+pre_test_ = ifelse(pre_test>1,pre_test,0)
+pre_test__ = ifelse(pre_test_>2,2,pre_test_)
+pre_test___ = ifelse(pre_test__>1&pre_test__<2,1,pre_test__)
+table(pre_test___,sky_balance_test$class)
+```
+---
+
+
+
+
+
+
+
